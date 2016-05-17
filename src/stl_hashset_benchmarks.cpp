@@ -8,6 +8,8 @@
 #include <vector>
 #include <unordered_set>
 #include <list>
+#include <queue>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -30,7 +32,6 @@ uint64_t getMemUsageInBytes()  {
 
 
 typedef std::unordered_set<uint32_t,std::hash<uint32_t>,std::equal_to<uint32_t>,MemoryCountingAllocator<uint32_t> >  hashset;
-
 
 
 /**
@@ -56,12 +57,12 @@ static void intersection(hashset& h1, hashset& h2, hashset& answer) {
     intersection(h2,h1,answer);
     return;
   }
+  answer.clear();
   for(hashset::iterator i = h1.begin(); i != h1.end(); i++) {
     if(h2.find(*i) != h2.end())
       answer.insert(*i);
   }
 }
-
 
 static void inplace_union(hashset& h1, hashset& h2) {
   for(hashset::iterator i = h2.begin(); i != h2.end(); i++) {
@@ -77,6 +78,13 @@ static void printusage(char *command) {
     ;
     printf("the -v flag turns on verbose mode");
 
+}
+
+
+
+
+int hashset_size_compare (const void * a, const void * b) {
+  return ( (const hashset*)a)->size() - ((const hashset*)b)->size() ;
 }
 
 int main(int argc, char **argv) {
@@ -120,7 +128,10 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < count; i++) {
       totalcard += howmany[i];
     }
-
+    uint64_t successivecard = 0;
+    for (size_t i = 1; i < count; i++) {
+      successivecard += howmany[i-1] + howmany[i];
+    }
     uint64_t cycles_start = 0, cycles_final = 0;
 
     RDTSC_START(cycles_start);
@@ -170,10 +181,32 @@ int main(int argc, char **argv) {
     }
     RDTSC_FINAL(cycles_final);
     data[3] = cycles_final - cycles_start;
-    if(verbose) printf("Total unions on %zu bitmaps took %" PRIu64 " cycles\n", count,
+    if(verbose) printf("Total naive unions on %zu bitmaps took %" PRIu64 " cycles\n", count,
                            cycles_final - cycles_start);
+    RDTSC_START(cycles_start);
+    if(count>1){
+      hashset **sortedbitmaps = (hashset**) malloc(sizeof(hashset*) * count);
+      for (int i = 0; i < (int)count ; ++i) sortedbitmaps[i] = & bitmaps[i];
+      qsort (sortedbitmaps, count, sizeof(hashset *), hashset_size_compare);
+        hashset v (*sortedbitmaps[0]);
+        for (int i = 1; i < (int)count ; ++i) {
+            inplace_union(v, *sortedbitmaps[i]);
+        }
+        total_or = v.size();
+        free(sortedbitmaps);
+    }
+    RDTSC_FINAL(cycles_final);
+    data[4] = cycles_final - cycles_start;
+    if(verbose) printf("Total sorted unions on %zu bitmaps took %" PRIu64 " cycles\n", count,
+                           cycles_final - cycles_start);
+
     if(verbose) printf("Collected stats  %" PRIu64 "  %" PRIu64 "  %" PRIu64 "\n",successive_and,successive_or,total_or);
-    printf(" %30.2f %30" PRIu64 " %30" PRIu64 " %30" PRIu64 "\n",data[0]*8.0/totalcard,data[1],data[2],data[3]);
+    printf(" %20.2f %20.2f %20.2f %20.2f %20.2f \n",
+      data[0]*8.0/totalcard,
+      data[1]*1.0/successivecard,
+      data[2]*1.0/successivecard,
+      data[3]*1.0/totalcard,
+      data[4]*1.0/totalcard);
 
     for (int i = 0; i < (int)count; ++i) {
         free(numbers[i]);

@@ -1,4 +1,6 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include "benchmark.h"
 #include "numbersfromtextfiles.h"
 #include "bitset.h"
@@ -26,6 +28,10 @@ static void printusage(char *command) {
     ;
     printf("the -v flag turns on verbose mode");
 
+}
+
+int bitset_size_compare (const void * a, const void * b) {
+  return ( bitset_size_in_bytes((const bitset_t*)a) - bitset_size_in_bytes((const bitset_t*)b) );
 }
 
 
@@ -68,7 +74,10 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < count; i++) {
       totalcard += howmany[i];
     }
-
+    uint64_t successivecard = 0;
+    for (size_t i = 1; i < count; i++) {
+       successivecard += howmany[i-1] + howmany[i];
+    }
     uint64_t cycles_start = 0, cycles_final = 0;
 
     RDTSC_START(cycles_start);
@@ -125,9 +134,32 @@ int main(int argc, char **argv) {
            cycles_final - cycles_start);
     data[3] = cycles_final - cycles_start;
 
+    RDTSC_START(cycles_start);
+    if(count>1){
+      bitset_t **sortedbitmaps = (bitset_t**) malloc(sizeof(*sortedbitmaps) * count);
+      memcpy(sortedbitmaps, bitmaps, sizeof(bitset_t *) * count);
+      qsort (sortedbitmaps, count, sizeof(bitset_t *), bitset_size_compare);
+      bitset_t * totalorbitmap = bitset_copy(sortedbitmaps[0]);
+      for(size_t i = 1; i < count; ++i) {
+        if(!bitset_inplace_union(totalorbitmap,sortedbitmaps[i])) printf("failed to compute union");
+      }
+      total_or = bitset_count(totalorbitmap);
+      bitset_free(totalorbitmap);
+      free(sortedbitmaps);
+    }
+    RDTSC_FINAL(cycles_final);
+    if(verbose) printf("Total sorted unions on %zu bitmaps took %" PRIu64 " cycles\n", count,
+           cycles_final - cycles_start);
+    data[4] = cycles_final - cycles_start;
+
     if(verbose) printf("Collected stats  %" PRIu64 "  %" PRIu64 "  %" PRIu64 "\n",successive_and,successive_or,total_or);
 
-    printf(" %30.2f %30" PRIu64 " %30" PRIu64 " %30" PRIu64 " \n",data[0]*8.0/totalcard,data[1],data[2],data[3]);
+    printf(" %20.2f %20.2f %20.2f %20.2f %20.2f \n",
+      data[0]*8.0/totalcard,
+      data[1]*1.0/successivecard,
+      data[2]*1.0/successivecard,
+      data[3]*1.0/totalcard,
+      data[4]*1.0/totalcard);
     for (int i = 0; i < (int)count; ++i) {
         free(numbers[i]);
         numbers[i] = NULL;  // paranoid

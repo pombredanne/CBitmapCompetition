@@ -1,10 +1,12 @@
-// this requires fastbit: https://github.com/gingi/fastbit
-
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
+
 #include <iostream>
 #include <algorithm>
 #include <vector>
 #include <list>
+#include <cassert>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,21 +16,23 @@ extern "C" {
 }
 #endif
 
-#include "bitvector.h" /* fastbit */
+#include "concise.h" /* from Concise library */
 
 /**
  * Once you have collected all the integers, build the bitmaps.
  */
-static std::vector<ibis::bitvector > create_all_bitmaps(size_t *howmany,
+static std::vector<ConciseSet<true> > create_all_bitmaps(size_t *howmany,
         uint32_t **numbers, size_t count) {
-    if (numbers == NULL) return std::vector<ibis::bitvector >();
-    std::vector<ibis::bitvector > answer(count);
+    if (numbers == NULL) return std::vector<ConciseSet<true> >();
+    std::vector<ConciseSet<true> > answer(count);
     for (size_t i = 0; i < count; i++) {
-        ibis::bitvector & bm = answer[i];
+        ConciseSet<true> & bm = answer[i];
         uint32_t * mynumbers = numbers[i];
         for(size_t j = 0; j < howmany[i] ; ++j) {
-            bm.set(mynumbers[j],true);
+            bm.add(mynumbers[j]);
         }
+        bm.compact();
+        assert(bm.size() == howmany[i]);
     }
     return answer;
 }
@@ -82,19 +86,22 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < count; i++) {
       totalcard += howmany[i];
     }
-
+    uint64_t successivecard = 0;
+    for (size_t i = 1; i < count; i++) {
+       successivecard += howmany[i-1] + howmany[i];
+    }
     uint64_t cycles_start = 0, cycles_final = 0;
 
     RDTSC_START(cycles_start);
-    std::vector<ibis::bitvector > bitmaps = create_all_bitmaps(howmany, numbers, count);
+    std::vector<ConciseSet<true> > bitmaps = create_all_bitmaps(howmany, numbers, count);
     RDTSC_FINAL(cycles_final);
     if (bitmaps.empty()) return -1;
     if(verbose) printf("Loaded %d bitmaps from directory %s \n", (int)count, dirname);
     uint64_t totalsize = 0;
 
     for (int i = 0; i < (int) count; ++i) {
-        ibis::bitvector & bv = bitmaps[i];
-        totalsize += bv.getSerialSize(); // should be close enough to memory usage
+        ConciseSet<true> & bv = bitmaps[i];
+        totalsize += bv.sizeInBytes(); // should be close enough to memory usage
     }
     data[0] = totalsize;
 
@@ -106,9 +113,8 @@ int main(int argc, char **argv) {
 
     RDTSC_START(cycles_start);
     for (int i = 0; i < (int)count - 1; ++i) {
-        ibis::bitvector * tempand = bitmaps[i] & bitmaps[i + 1];
-        successive_and += tempand->count();
-        delete tempand;
+        ConciseSet<true>  tempand = bitmaps[i].logicaland(bitmaps[i + 1]);
+        successive_and += tempand.size();
     }
     RDTSC_FINAL(cycles_final);
     data[1] = cycles_final - cycles_start;
@@ -117,9 +123,8 @@ int main(int argc, char **argv) {
 
     RDTSC_START(cycles_start);
     for (int i = 0; i < (int)count - 1; ++i) {
-        ibis::bitvector * tempor = bitmaps[i] | bitmaps[i + 1];
-        successive_or += tempor->count();
-        delete tempor;
+        ConciseSet<true>  tempor = bitmaps[i].logicalor(bitmaps[i + 1]);
+        successive_or += tempor.size();
     }
     RDTSC_FINAL(cycles_final);
     data[2] = cycles_final - cycles_start;
@@ -128,19 +133,36 @@ int main(int argc, char **argv) {
 
     RDTSC_START(cycles_start);
     if(count>1) {
-        ibis::bitvector * totalorbitmap = bitmaps[0] | bitmaps[1];
-        for (int i = 2; i < (int)count ; ++i) {
-            * totalorbitmap |= bitmaps[i];
+        ConciseSet<true>  totalorbitmap  = bitmaps[0].logicalor(bitmaps[1]);
+        for(int i = 2 ; i < (int) count; ++i) {
+          ConciseSet<true> tmp = totalorbitmap.logicalor(bitmaps[i]);
+          totalorbitmap.swap(tmp);
         }
-        total_or = totalorbitmap->count();
-        delete totalorbitmap;
+        total_or = totalorbitmap.size();
     }
     RDTSC_FINAL(cycles_final);
     data[3] = cycles_final - cycles_start;
-    if(verbose) printf("Total unions on %zu bitmaps took %" PRIu64 " cycles\n", count,
+    if(verbose) printf("Total naive unions on %zu bitmaps took %" PRIu64 " cycles\n", count,
+                           cycles_final - cycles_start);
+    RDTSC_START(cycles_start);
+    if(count>1) {
+        const ConciseSet<true>  ** allofthem = new const ConciseSet<true>* [count];
+        for(int i = 0 ; i < (int) count; ++i) allofthem[i] = & bitmaps[i];
+        ConciseSet<true> totalorbitmap = ConciseSet<true>::fast_logicalor(count, allofthem);
+        total_or = totalorbitmap.size();
+        delete[] allofthem;
+    }
+    RDTSC_FINAL(cycles_final);
+    data[4] = cycles_final - cycles_start;
+    if(verbose) printf("Total heap unions on %zu bitmaps took %" PRIu64 " cycles\n", count,
                            cycles_final - cycles_start);
     if(verbose) printf("Collected stats  %" PRIu64 "  %" PRIu64 "  %" PRIu64 "\n",successive_and,successive_or,total_or);
-    printf(" %30.2f %40" PRIu64 " %40" PRIu64 " %40" PRIu64 "\n",data[0]*8.0/totalcard,data[1],data[2],data[3]);
+    printf(" %20.2f %20.2f %20.2f %20.2f %20.2f \n",
+      data[0]*8.0/totalcard,
+      data[1]*1.0/successivecard,
+      data[2]*1.0/successivecard,
+      data[3]*1.0/totalcard,
+      data[4]*1.0/totalcard);
 
     for (int i = 0; i < (int)count; ++i) {
         free(numbers[i]);
